@@ -24,4 +24,5 @@ jobs:
 
       - name: Run script
         run: |
-          python sermon_bot.py
+          ls -al
+          python ./sermon_bot.py
