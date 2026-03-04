@@ -5,7 +5,7 @@
 - 음성 → 텍스트 변환 (faster-whisper, 무료 오픈소스)
 - 설교 요약 (OpenAI GPT)
 - Word 문서(.docx) 생성
-- Google Drive 자동 업로드 (OAuth2)
+- Google Drive 자동 업로드 (OAuth2, 날짜별 폴더)
 """
 
 import os
@@ -22,13 +22,29 @@ def download_latest_sermon(vimeo_url, output_dir):
     print("📥 1단계: Vimeo에서 최신 설교 음성 다운로드")
     print("=" * 60)
 
+    # 먼저 영상 제목 가져오기
+    title_cmd = [
+        "yt-dlp",
+        "--playlist-items", "1",
+        "--get-title",
+        vimeo_url
+    ]
+    title_result = subprocess.run(title_cmd, capture_output=True, text=True)
+    title = title_result.stdout.strip() if title_result.returncode == 0 else "주일설교"
+    print(f"  📌 영상 제목: {title}")
+
+    # 파일명 안전 처리
+    safe_title = "".join(c for c in title if c not in r'\/:*?"<>|')[:50]
+    today = datetime.now().strftime("%Y%m%d")
+    audio_filename = f"설교음성_{today}_{safe_title}"
+
     cmd = [
         "yt-dlp",
         "--playlist-items", "1",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "5",
-        "--output", os.path.join(output_dir, "sermon_audio.%(ext)s"),
+        "--output", os.path.join(output_dir, f"{audio_filename}.%(ext)s"),
         "--no-overwrites",
         vimeo_url
     ]
@@ -41,18 +57,8 @@ def download_latest_sermon(vimeo_url, output_dir):
         print(f"  ❌ 다운로드 에러: {result.stderr}")
         sys.exit(1)
 
-    audio_path = os.path.join(output_dir, "sermon_audio.mp3")
+    audio_path = os.path.join(output_dir, f"{audio_filename}.mp3")
     print(f"  ✅ 다운로드 완료: {audio_path}")
-
-    title_cmd = [
-        "yt-dlp",
-        "--playlist-items", "1",
-        "--get-title",
-        vimeo_url
-    ]
-    title_result = subprocess.run(title_cmd, capture_output=True, text=True)
-    title = title_result.stdout.strip() if title_result.returncode == 0 else "주일설교"
-    print(f"  📌 영상 제목: {title}")
 
     return audio_path, title
 
@@ -194,9 +200,43 @@ def create_word_document(content, filename, title, doc_type="transcript"):
 
 
 # ============================================================
-# 5단계: Google Drive 업로드 (OAuth2)
+# 5단계: Google Drive 업로드 (OAuth2, 날짜별 폴더)
 # ============================================================
-def upload_to_google_drive(file_paths, folder_id):
+def get_or_create_date_folder(service, parent_folder_id, folder_name):
+    """날짜별 하위 폴더를 찾거나 새로 만듭니다."""
+
+    # 이미 같은 이름의 폴더가 있는지 확인
+    query = (
+        f"name='{folder_name}' and "
+        f"'{parent_folder_id}' in parents and "
+        f"mimeType='application/vnd.google-apps.folder' and "
+        f"trashed=false"
+    )
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    files = results.get("files", [])
+
+    if files:
+        # 이미 존재하면 해당 폴더 사용
+        folder_id = files[0]["id"]
+        print(f"  📁 기존 폴더 사용: {folder_name}")
+    else:
+        # 없으면 새로 생성
+        folder_metadata = {
+            "name": folder_name,
+            "mimeType": "application/vnd.google-apps.folder",
+            "parents": [parent_folder_id]
+        }
+        folder = service.files().create(
+            body=folder_metadata,
+            fields="id, name"
+        ).execute()
+        folder_id = folder["id"]
+        print(f"  📁 새 폴더 생성: {folder_name}")
+
+    return folder_id
+
+
+def upload_to_google_drive(file_paths, parent_folder_id):
     print("\n" + "=" * 60)
     print("☁️ 5단계: Google Drive 업로드")
     print("=" * 60)
@@ -206,14 +246,13 @@ def upload_to_google_drive(file_paths, folder_id):
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    # OAuth2 인증 (Refresh Token 사용)
+    # OAuth2 인증
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
     refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
 
     if not all([client_id, client_secret, refresh_token]):
         print("  ❌ Google OAuth 환경변수가 설정되지 않았습니다!")
-        print("  필요: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN")
         return False
 
     try:
@@ -230,6 +269,11 @@ def upload_to_google_drive(file_paths, folder_id):
     except Exception as e:
         print(f"  ❌ 인증 에러: {e}")
         return False
+
+    # 날짜별 하위 폴더 생성 (예: "20260304_주일설교")
+    today = datetime.now().strftime("%Y%m%d")
+    date_folder_name = f"{today}_주일설교"
+    target_folder_id = get_or_create_date_folder(service, parent_folder_id, date_folder_name)
 
     # 파일 업로드
     uploaded_files = []
@@ -250,7 +294,7 @@ def upload_to_google_drive(file_paths, folder_id):
 
         file_metadata = {
             "name": file_name,
-            "parents": [folder_id]
+            "parents": [target_folder_id]
         }
 
         media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
@@ -269,6 +313,7 @@ def upload_to_google_drive(file_paths, folder_id):
             print(f"  ❌ 업로드 실패 ({file_name}): {e}")
 
     print(f"\n  📊 업로드 결과: {len(uploaded_files)}/{len(file_paths)}개 파일 완료")
+    print(f"  📁 저장 위치: {date_folder_name}/")
     return True
 
 
