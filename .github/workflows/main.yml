@@ -1,0 +1,27 @@
+name: Dongam Sermon Auto
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+jobs:
+  run-sermon-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install libraries
+        run: |
+          pip install requests beautifulsoup4 yt-dlp openai
+
+      - name: Run script
+        run: |
+          python sermon_bot.py
