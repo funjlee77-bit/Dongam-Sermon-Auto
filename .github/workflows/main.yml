@@ -2,27 +2,52 @@ name: Dongam Sermon Auto
 
 on:
   schedule:
-    - cron: '0 3 * * 1'
-  workflow_dispatch:
+    - cron: '0 12 * * 0'   # 매주 일요일 UTC 12:00 = 한국시간 월요일 오전 9시 (한국 시간에 맞춤)
+  workflow_dispatch:        # 수동으로도 실행 가능 (테스트용)
 
 jobs:
   run-sermon-bot:
     runs-on: ubuntu-latest
+    timeout-minutes: 90     # 최대 90분 (Whisper 전사에 시간이 걸릴 수 있음)
 
     steps:
+      # 1) 저장소 코드 가져오기
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2) Python 설치
       - name: Install Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install libraries
+      # 3) ffmpeg 설치 (음성 처리에 필요)
+      - name: Install ffmpeg
         run: |
-          pip install requests beautifulsoup4 yt-dlp openai
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
 
-      - name: Run script
+      # 4) Python 라이브러리 설치
+      - name: Install Python libraries
         run: |
-          ls -al
+          pip install yt-dlp              # Vimeo 영상 다운로드
+          pip install faster-whisper      # 음성→텍스트 변환 (무료 오픈소스)
+          pip install openai              # GPT 요약
+          pip install python-docx         # Word 문서 생성
+
+      # 5) 스크립트 실행
+      - name: Run sermon bot
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          VIMEO_URL: ${{ secrets.VIMEO_URL }}
+        run: |
           python ./sermon_bot.py
+
+      # 6) 결과물 업로드 (GitHub에서 다운로드 가능)
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sermon-output-${{ github.run_number }}
+          path: output/
+          retention-days: 30
