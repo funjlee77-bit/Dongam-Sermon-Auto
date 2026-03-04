@@ -30,13 +30,15 @@ jobs:
           pip install faster-whisper
           pip install openai
           pip install python-docx
-          pip install google-api-python-client google-auth
+          pip install google-api-python-client google-auth google-auth-oauthlib
 
       - name: Run sermon bot
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           VIMEO_URL: ${{ secrets.VIMEO_URL }}
-          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GOOGLE_REFRESH_TOKEN: ${{ secrets.GOOGLE_REFRESH_TOKEN }}
           DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
         run: |
           python ./sermon_bot.py
