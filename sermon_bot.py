@@ -5,10 +5,12 @@
 - 음성 → 텍스트 변환 (faster-whisper, 무료 오픈소스)
 - 설교 요약 (OpenAI GPT)
 - Word 문서(.docx) 생성
+- Google Drive 자동 업로드
 """
 
 import os
 import sys
+import json
 import subprocess
 from datetime import datetime
 
@@ -21,13 +23,12 @@ def download_latest_sermon(vimeo_url, output_dir):
     print("📥 1단계: Vimeo에서 최신 설교 음성 다운로드")
     print("=" * 60)
 
-    # yt-dlp로 최신 영상 1개의 오디오만 다운로드
     cmd = [
         "yt-dlp",
-        "--playlist-items", "1",       # 가장 최신 영상 1개만
-        "--extract-audio",             # 오디오만 추출
-        "--audio-format", "mp3",       # MP3 형식으로 변환
-        "--audio-quality", "5",        # 적당한 품질 (파일 크기 절약)
+        "--playlist-items", "1",
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "5",
         "--output", os.path.join(output_dir, "sermon_audio.%(ext)s"),
         "--no-overwrites",
         vimeo_url
@@ -44,7 +45,6 @@ def download_latest_sermon(vimeo_url, output_dir):
     audio_path = os.path.join(output_dir, "sermon_audio.mp3")
     print(f"  ✅ 다운로드 완료: {audio_path}")
 
-    # 영상 제목 가져오기 (파일명에 사용)
     title_cmd = [
         "yt-dlp",
         "--playlist-items", "1",
@@ -69,8 +69,6 @@ def transcribe_audio(audio_path):
 
     from faster_whisper import WhisperModel
 
-    # "base" 모델: GitHub Actions(2코어 CPU)에서 실행 가능한 크기
-    # 더 정확한 결과를 원하면 "small"로 변경 (단, 시간이 더 오래 걸림)
     print("  모델 로딩 중... (처음 실행 시 다운로드됨)")
     model = WhisperModel("base", device="cpu", compute_type="int8")
 
@@ -109,7 +107,6 @@ def summarize_sermon(transcript, title):
 
     client = OpenAI(api_key=api_key)
 
-    # 전사 텍스트가 너무 길면 잘라서 보냄 (GPT 토큰 제한)
     max_chars = 15000
     transcript_trimmed = transcript[:max_chars]
     if len(transcript) > max_chars:
@@ -157,24 +154,20 @@ def create_word_document(content, filename, title, doc_type="transcript"):
 
     doc = Document()
 
-    # --- 제목 ---
     heading = doc.add_heading(title, level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-    # --- 날짜 ---
     date_para = doc.add_paragraph(datetime.now().strftime("%Y년 %m월 %d일 주일설교"))
     date_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     date_para.runs[0].font.size = Pt(11)
 
-    doc.add_paragraph("")  # 빈 줄
+    doc.add_paragraph("")
 
     if doc_type == "transcript":
-        # === 전사본: 긴 텍스트를 적당한 문단으로 나누기 ===
         sentences = content.replace(". ", ".\n").split("\n")
         current_para = ""
         for sent in sentences:
             current_para += sent.strip() + " "
-            # 약 200자마다 문단 나누기 (읽기 편하게)
             if len(current_para) > 200:
                 p = doc.add_paragraph(current_para.strip())
                 p.style.font.size = Pt(11)
@@ -183,20 +176,16 @@ def create_word_document(content, filename, title, doc_type="transcript"):
             p = doc.add_paragraph(current_para.strip())
             p.style.font.size = Pt(11)
     else:
-        # === 요약본: 줄바꿈 기준으로 처리 ===
         for line in content.split("\n"):
             line = line.strip()
             if not line:
                 continue
-            # 대괄호로 시작하면 소제목으로 처리
             if line.startswith("[") and line.endswith("]"):
                 doc.add_heading(line[1:-1], level=2)
-            # 마크다운 헤더(##) 처리
             elif line.startswith("## "):
                 doc.add_heading(line[3:], level=2)
             elif line.startswith("# "):
                 doc.add_heading(line[2:], level=2)
-            # 번호 매기기 또는 글머리표 항목
             elif line.startswith(("- ", "• ", "* ")):
                 doc.add_paragraph(line[2:], style="List Bullet")
             elif len(line) > 1 and line[0].isdigit() and line[1] in ".)" :
@@ -206,6 +195,79 @@ def create_word_document(content, filename, title, doc_type="transcript"):
 
     doc.save(filename)
     print(f"  📄 문서 저장 완료: {filename}")
+
+
+# ============================================================
+# 5단계: Google Drive 업로드
+# ============================================================
+def upload_to_google_drive(file_paths, folder_id):
+    """Google Drive에 파일들을 업로드합니다."""
+    print("\n" + "=" * 60)
+    print("☁️ 5단계: Google Drive 업로드")
+    print("=" * 60)
+
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+
+    # 서비스 계정 인증
+    credentials_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not credentials_json:
+        print("  ❌ GOOGLE_CREDENTIALS 환경변수가 설정되지 않았습니다!")
+        print("  Google Drive 업로드를 건너뜁니다.")
+        return False
+
+    try:
+        credentials_info = json.loads(credentials_json)
+        credentials = service_account.Credentials.from_service_account_info(
+            credentials_info,
+            scopes=["https://www.googleapis.com/auth/drive.file"]
+        )
+        service = build("drive", "v3", credentials=credentials)
+        print("  ✅ Google Drive 인증 성공!")
+    except Exception as e:
+        print(f"  ❌ 인증 에러: {e}")
+        return False
+
+    # 파일 업로드
+    uploaded_files = []
+    for file_path in file_paths:
+        if not os.path.exists(file_path):
+            print(f"  ⚠️ 파일을 찾을 수 없음: {file_path}")
+            continue
+
+        file_name = os.path.basename(file_path)
+
+        mime_types = {
+            ".mp3": "audio/mpeg",
+            ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".txt": "text/plain",
+        }
+        ext = os.path.splitext(file_name)[1].lower()
+        mime_type = mime_types.get(ext, "application/octet-stream")
+
+        file_metadata = {
+            "name": file_name,
+            "parents": [folder_id]
+        }
+
+        media = MediaFileUpload(file_path, mimetype=mime_type, resumable=True)
+
+        try:
+            file = service.files().create(
+                body=file_metadata,
+                media_body=media,
+                fields="id, name, webViewLink"
+            ).execute()
+
+            print(f"  ✅ 업로드 완료: {file_name}")
+            print(f"     링크: {file.get('webViewLink', 'N/A')}")
+            uploaded_files.append(file)
+        except Exception as e:
+            print(f"  ❌ 업로드 실패 ({file_name}): {e}")
+
+    print(f"\n  📊 업로드 결과: {len(uploaded_files)}/{len(file_paths)}개 파일 완료")
+    return True
 
 
 # ============================================================
@@ -220,8 +282,9 @@ def main():
     VIMEO_URL = os.environ.get("VIMEO_URL")
     if not VIMEO_URL:
         print("❌ 에러: VIMEO_URL 환경변수가 설정되지 않았습니다!")
-        print("   GitHub 저장소 Settings → Secrets에서 VIMEO_URL을 추가해주세요.")
         sys.exit(1)
+
+    DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
 
     # 결과물 저장 폴더
     OUTPUT_DIR = "output"
@@ -233,7 +296,6 @@ def main():
     # --- 2단계: 음성 → 텍스트 ---
     transcript = transcribe_audio(audio_path)
 
-    # 전사 텍스트를 txt 파일로도 저장 (백업용)
     txt_path = os.path.join(OUTPUT_DIR, "transcript_raw.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(transcript)
@@ -243,8 +305,6 @@ def main():
 
     # --- 4단계: Word 문서 생성 ---
     today = datetime.now().strftime("%Y%m%d")
-
-    # 파일명에서 특수문자 제거 (Windows 호환)
     safe_title = "".join(c for c in sermon_title if c not in r'\/:*?"<>|')[:50]
 
     transcript_file = os.path.join(OUTPUT_DIR, f"설교전사_{today}_{safe_title}.docx")
@@ -252,6 +312,13 @@ def main():
 
     summary_file = os.path.join(OUTPUT_DIR, f"설교요약_{today}_{safe_title}.docx")
     create_word_document(summary, summary_file, sermon_title, doc_type="summary")
+
+    # --- 5단계: Google Drive 업로드 ---
+    if DRIVE_FOLDER_ID:
+        upload_files = [audio_path, transcript_file, summary_file]
+        upload_to_google_drive(upload_files, DRIVE_FOLDER_ID)
+    else:
+        print("\n⚠️ DRIVE_FOLDER_ID가 설정되지 않아 Google Drive 업로드를 건너뜁니다.")
 
     # === 완료 ===
     print("\n" + "=" * 60)
