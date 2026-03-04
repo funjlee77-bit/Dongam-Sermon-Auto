@@ -5,7 +5,7 @@
 - 음성 → 텍스트 변환 (faster-whisper, 무료 오픈소스)
 - 설교 요약 (OpenAI GPT)
 - Word 문서(.docx) 생성
-- Google Drive 자동 업로드
+- Google Drive 자동 업로드 (OAuth2)
 """
 
 import os
@@ -18,7 +18,6 @@ from datetime import datetime
 # 1단계: Vimeo에서 최신 설교 음성 다운로드
 # ============================================================
 def download_latest_sermon(vimeo_url, output_dir):
-    """Vimeo에서 최신 영상의 음성만 다운로드합니다."""
     print("=" * 60)
     print("📥 1단계: Vimeo에서 최신 설교 음성 다운로드")
     print("=" * 60)
@@ -62,7 +61,6 @@ def download_latest_sermon(vimeo_url, output_dir):
 # 2단계: 음성 → 텍스트 변환 (Whisper)
 # ============================================================
 def transcribe_audio(audio_path):
-    """faster-whisper를 사용하여 음성을 텍스트로 변환합니다."""
     print("\n" + "=" * 60)
     print("🎙️ 2단계: 음성 → 텍스트 변환 (Whisper)")
     print("=" * 60)
@@ -93,7 +91,6 @@ def transcribe_audio(audio_path):
 # 3단계: 설교 요약 (OpenAI GPT)
 # ============================================================
 def summarize_sermon(transcript, title):
-    """OpenAI GPT를 사용하여 설교를 요약합니다."""
     print("\n" + "=" * 60)
     print("📝 3단계: 설교 요약 (OpenAI GPT)")
     print("=" * 60)
@@ -147,7 +144,6 @@ def summarize_sermon(transcript, title):
 # 4단계: Word 문서 생성
 # ============================================================
 def create_word_document(content, filename, title, doc_type="transcript"):
-    """Word 문서(.docx)를 생성합니다."""
     from docx import Document
     from docx.shared import Pt
     from docx.enum.text import WD_ALIGN_PARAGRAPH
@@ -198,31 +194,37 @@ def create_word_document(content, filename, title, doc_type="transcript"):
 
 
 # ============================================================
-# 5단계: Google Drive 업로드
+# 5단계: Google Drive 업로드 (OAuth2)
 # ============================================================
 def upload_to_google_drive(file_paths, folder_id):
-    """Google Drive에 파일들을 업로드합니다."""
     print("\n" + "=" * 60)
     print("☁️ 5단계: Google Drive 업로드")
     print("=" * 60)
 
-    from google.oauth2 import service_account
+    from google.oauth2.credentials import Credentials
+    from google.auth.transport.requests import Request
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    # 서비스 계정 인증
-    credentials_json = os.environ.get("GOOGLE_CREDENTIALS")
-    if not credentials_json:
-        print("  ❌ GOOGLE_CREDENTIALS 환경변수가 설정되지 않았습니다!")
-        print("  Google Drive 업로드를 건너뜁니다.")
+    # OAuth2 인증 (Refresh Token 사용)
+    client_id = os.environ.get("GOOGLE_CLIENT_ID")
+    client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
+    refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
+
+    if not all([client_id, client_secret, refresh_token]):
+        print("  ❌ Google OAuth 환경변수가 설정되지 않았습니다!")
+        print("  필요: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REFRESH_TOKEN")
         return False
 
     try:
-        credentials_info = json.loads(credentials_json)
-        credentials = service_account.Credentials.from_service_account_info(
-            credentials_info,
-            scopes=["https://www.googleapis.com/auth/drive.file"]
+        credentials = Credentials(
+            token=None,
+            refresh_token=refresh_token,
+            client_id=client_id,
+            client_secret=client_secret,
+            token_uri="https://oauth2.googleapis.com/token"
         )
+        credentials.refresh(Request())
         service = build("drive", "v3", credentials=credentials)
         print("  ✅ Google Drive 인증 성공!")
     except Exception as e:
@@ -278,7 +280,6 @@ def main():
     print(f"   실행 시간: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print()
 
-    # === 환경변수에서 설정 읽기 ===
     VIMEO_URL = os.environ.get("VIMEO_URL")
     if not VIMEO_URL:
         print("❌ 에러: VIMEO_URL 환경변수가 설정되지 않았습니다!")
@@ -286,7 +287,6 @@ def main():
 
     DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID", "")
 
-    # 결과물 저장 폴더
     OUTPUT_DIR = "output"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
