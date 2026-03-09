@@ -1,11 +1,16 @@
 #!/usr/bin/env python3
 """
 동감교회 설교 자동 전사 시스템
-- Vimeo에서 최신 설교 영상의 음성 다운로드
+- Vimeo 채널에서 최신 설교 영상 자동 감지 (찬양 영상 제외)
 - 음성 → 텍스트 변환 (faster-whisper, 무료 오픈소스)
 - 설교 요약 (OpenAI GPT)
 - Word 문서(.docx) 생성
 - Google Drive 자동 업로드 (OAuth2, 날짜별 폴더)
+
+영상 제목 패턴:
+  설교: "동암교회 OOO 담임목사 - 2026 주일예배"
+  찬양: "동암교회 OOO 담임목사 - 2026 주일예배 찬양"
+  → "주일예배"가 포함되고 "찬양"이 없는 영상만 선택
 """
 
 import os
@@ -15,52 +20,87 @@ import subprocess
 from datetime import datetime
 
 # ============================================================
-# 1단계: Vimeo에서 최신 설교 음성 다운로드
+# 1단계: Vimeo 채널에서 최신 설교 음성 다운로드
 # ============================================================
 def download_latest_sermon(vimeo_url, output_dir):
     print("=" * 60)
-    print("📥 1단계: Vimeo에서 최신 설교 음성 다운로드")
+    print("📥 1단계: Vimeo 채널에서 최신 설교 영상 감지 및 다운로드")
     print("=" * 60)
 
-    # 먼저 영상 제목 가져오기
-    title_cmd = [
+    # 채널의 최근 영상 10개의 제목과 ID를 가져온다
+    print("  🔍 채널에서 최근 영상 목록 확인 중...")
+    list_cmd = [
         "yt-dlp",
-        "--playlist-items", "1",
-        "--get-title",
+        "--playlist-items", "1:10",
+        "--print", "%(title)s|||%(id)s",
+        "--no-download",
         vimeo_url
     ]
-    title_result = subprocess.run(title_cmd, capture_output=True, text=True)
-    title = title_result.stdout.strip() if title_result.returncode == 0 else "주일설교"
-    print(f"  📌 영상 제목: {title}")
 
-    # 파일명 안전 처리
-    safe_title = "".join(c for c in title if c not in r'\/:*?"<>|')[:50]
+    result = subprocess.run(list_cmd, capture_output=True, text=True)
+
+    if result.returncode != 0 or not result.stdout.strip():
+        print(f"  ❌ 채널 영상 목록을 가져올 수 없습니다!")
+        print(f"  stderr: {result.stderr}")
+        sys.exit(1)
+
+    # 제목 기반 필터링: "주일예배"가 포함되고 "찬양"이 없는 첫 번째 영상
+    lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
+
+    sermon_title = None
+    sermon_id = None
+
+    print(f"  📋 최근 영상 목록:")
+    for line in lines:
+        if "|||" not in line:
+            continue
+        title, video_id = line.rsplit("|||", 1)
+        title = title.strip()
+        video_id = video_id.strip()
+
+        is_sermon = "주일예배" in title and "찬양" not in title
+        marker = "✅ 설교" if is_sermon else "⬜ 제외"
+        print(f"    {marker}: {title} (ID: {video_id})")
+
+        if is_sermon and sermon_title is None:
+            sermon_title = title
+            sermon_id = video_id
+
+    if not sermon_title or not sermon_id:
+        print("  ❌ 설교 영상을 찾을 수 없습니다! (주일예배 제목 영상 없음)")
+        sys.exit(1)
+
+    video_url = f"https://vimeo.com/{sermon_id}"
+    print(f"\n  📌 선택된 설교 영상: {sermon_title}")
+    print(f"  🔗 영상 URL: {video_url}")
+
+    # 오디오 다운로드
+    safe_title = "".join(c for c in sermon_title if c not in r'\/:*?"<>|')[:50]
     today = datetime.now().strftime("%Y%m%d")
     audio_filename = f"설교음성_{today}_{safe_title}"
 
-    cmd = [
+    download_cmd = [
         "yt-dlp",
-        "--playlist-items", "1",
         "--extract-audio",
         "--audio-format", "mp3",
         "--audio-quality", "5",
         "--output", os.path.join(output_dir, f"{audio_filename}.%(ext)s"),
         "--no-overwrites",
-        vimeo_url
+        video_url
     ]
 
-    print(f"  다운로드 URL: {vimeo_url}")
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    print(result.stdout)
+    print(f"  📥 오디오 다운로드 시작...")
+    dl_result = subprocess.run(download_cmd, capture_output=True, text=True)
+    print(dl_result.stdout)
 
-    if result.returncode != 0:
-        print(f"  ❌ 다운로드 에러: {result.stderr}")
+    if dl_result.returncode != 0:
+        print(f"  ❌ 다운로드 에러: {dl_result.stderr}")
         sys.exit(1)
 
     audio_path = os.path.join(output_dir, f"{audio_filename}.mp3")
     print(f"  ✅ 다운로드 완료: {audio_path}")
 
-    return audio_path, title
+    return audio_path, sermon_title
 
 
 # ============================================================
@@ -204,8 +244,6 @@ def create_word_document(content, filename, title, doc_type="transcript"):
 # ============================================================
 def get_or_create_date_folder(service, parent_folder_id, folder_name):
     """날짜별 하위 폴더를 찾거나 새로 만듭니다."""
-
-    # 이미 같은 이름의 폴더가 있는지 확인
     query = (
         f"name='{folder_name}' and "
         f"'{parent_folder_id}' in parents and "
@@ -216,11 +254,9 @@ def get_or_create_date_folder(service, parent_folder_id, folder_name):
     files = results.get("files", [])
 
     if files:
-        # 이미 존재하면 해당 폴더 사용
         folder_id = files[0]["id"]
         print(f"  📁 기존 폴더 사용: {folder_name}")
     else:
-        # 없으면 새로 생성
         folder_metadata = {
             "name": folder_name,
             "mimeType": "application/vnd.google-apps.folder",
@@ -246,7 +282,6 @@ def upload_to_google_drive(file_paths, parent_folder_id):
     from googleapiclient.discovery import build
     from googleapiclient.http import MediaFileUpload
 
-    # OAuth2 인증
     client_id = os.environ.get("GOOGLE_CLIENT_ID")
     client_secret = os.environ.get("GOOGLE_CLIENT_SECRET")
     refresh_token = os.environ.get("GOOGLE_REFRESH_TOKEN")
@@ -270,7 +305,7 @@ def upload_to_google_drive(file_paths, parent_folder_id):
         print(f"  ❌ 인증 에러: {e}")
         return False
 
-    # 날짜별 하위 폴더 생성 (예: "20260304_주일설교")
+    # 날짜별 하위 폴더 생성
     today = datetime.now().strftime("%Y%m%d")
     date_folder_name = f"{today}_주일설교"
     target_folder_id = get_or_create_date_folder(service, parent_folder_id, date_folder_name)
@@ -335,7 +370,7 @@ def main():
     OUTPUT_DIR = "output"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    # --- 1단계: 음성 다운로드 ---
+    # --- 1단계: 설교 영상 감지 & 음성 다운로드 ---
     audio_path, sermon_title = download_latest_sermon(VIMEO_URL, OUTPUT_DIR)
 
     # --- 2단계: 음성 → 텍스트 ---
