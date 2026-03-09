@@ -114,7 +114,7 @@ def transcribe_audio(audio_path):
     from faster_whisper import WhisperModel
 
     print("  모델 로딩 중... (처음 실행 시 다운로드됨)")
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    model = WhisperModel("large-v3", device="cpu", compute_type="int8")
 
     print("  전사 시작... (30분 설교 기준 약 10~20분 소요)")
     segments, info = model.transcribe(audio_path, language="ko")
